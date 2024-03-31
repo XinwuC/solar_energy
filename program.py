@@ -1,9 +1,9 @@
-import datetime
 import json
 import logging
 import logging.config
 import os
 
+from datetime import datetime, timedelta
 from dateutil import tz
 from suntime import Sun
 from time import sleep
@@ -32,6 +32,12 @@ class SolarHome:
         self.powerwall_user = powerwall_user
         self.powerwall_password = powerwall_password
         self.powerwall = None
+
+        self.min_excessive_solar = int(6 * 240 * 1.05)
+        self.min_charging_state_change_interval = timedelta(minutes=5)
+        self.last_charging_state_change = (
+            datetime.now() - self.min_charging_state_change_interval
+        )
 
     def login_powerwall(self) -> None:
         if not self.powerwall or not self.powerwall.is_connected():
@@ -90,9 +96,18 @@ class SolarHome:
             return
 
         excessive = self.available_solar() + evse.charger_on * evse.charging_rate * 240
-        if excessive * 0.95 > 240 * 6:
+        if excessive > self.min_excessive_solar:
             charge_rate = max(min(excessive * 0.95 / 240, 40), 6)
+            wait = self.charger_protection_wait()
+            if not evse.charger_on and wait > 0:
+                self.logger.debug(
+                    "Charger protection: wait %d seconds to charge." % wait
+                )
+                sleep(wait)
+                return
             if not evse.charger_on or evse.charging_rate != charge_rate:
+                if not evse.charger_on:
+                    self.last_charging_state_change = datetime.now()
                 evse.charger_on = True
                 evse.charging_rate = charge_rate
                 evse.max_charging_rate = 40
@@ -102,33 +117,50 @@ class SolarHome:
                         evse.charging_rate, excessive
                     )
                 )
+            else:
+                self.logger.debug("No change for charging.")
         else:
             self.logger.debug(
-                "Excessive solar is not enough: {0:,d}w".format(excessive)
+                "Excessive solar is not enough: {0:,d}w, min: {1:,dw}".format(
+                    excessive, self.min_excessive_solar
+                )
             )
             self.stop_charger()
 
+    def charger_protection_wait(self) -> int:
+        interval = datetime.now() - self.last_charging_state_change
+        return max(
+            0, self.min_charging_state_change_interval.seconds - interval.seconds
+        )
+
     def stop_charger(self):
-        if self.emporia:
-            evse = self.emporia.get_chargers()[0]
-            if evse.charger_on:
-                evse.charger_on = False
-                evse = self.emporia.update_charger(evse)
-                self.logger.debug("Charging stopped!")
+        evse = self.emporia.get_chargers()[0]
+        if not evse.charger_on:
+            return
+        wait = self.charger_protection_wait()
+        if wait > 0:
+            self.logger.debug(
+                "Wait %s seconds before stop and lower to min charging rate." % wait
+            )
+            evse.charging_rate = 6
+            self.emporia.update_charger(evse)
+        else:
+            evse.charger_on = False
+            evse = self.emporia.update_charger(evse)
+            self.logger.debug("Charging stopped!")
 
     def run(self):
         # run till sunset
         sun = Sun(37.32, -122.03)
         sunset = sun.get_sunset_time(time_zone=tz.gettz("America/Los_Angeles")).time()
         self.logger.info("Today sunset at %s" % sunset.strftime("%H:%M:%S"))
-        while datetime.datetime.now().time() < sunset:
+        while datetime.now().time() < sunset:
             try:
                 self.set_charger()
-                sleep(60)
             except Exception as e:
                 self.logger.exception(e)
             finally:
-                self.stop_charger()
+                sleep(15)
 
 
 if __name__ == "__main__":
@@ -146,3 +178,4 @@ if __name__ == "__main__":
         emporia_password=params["emporia"]["password"],
     )
     home.run()
+    home.stop_charger()
