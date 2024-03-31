@@ -8,39 +8,65 @@ import pyemvue
 
 
 class SolarHome:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        powerwall_host: str,
+        powerwall_user: str,
+        powerwall_password: str,
+        emporia_user: str,
+        emporia_password,
+    ) -> None:
         self.logger = logging.getLogger(__name__)
-        self.evse_token_file = "keys.json"
+        self.emporia_token_file = "keys.json"
+        # self.emporia_user = emporia_user
+        # self.emporia_password = emporia_pw
+        self.emporia = pyemvue.PyEmVue()
+        self.login_emporia(username=emporia_user, password=emporia_password)
 
-    def login_powerwall(self, host: str, email: str, password: str) -> None:
-        self.powerwall = pypowerwall.Powerwall(
-            host=host, email=email, password=password, timezone="America/Los_Angeles"
-        )
-        self.logger.info(
-            "Connect to Tesla Powerwall: %s" % self.powerwall.is_connected()
-        )
+        self.powerwall_host = powerwall_host
+        self.powerwall_user = powerwall_user
+        self.powerwall_password = powerwall_password
+        self.powerwall = None
+
+    def login_powerwall(self) -> None:
+        if not self.powerwall or not self.powerwall.is_connected():
+            self.powerwall = pypowerwall.Powerwall(
+                host=self.powerwall_host,
+                email=self.powerwall_user,
+                password=self.powerwall_password,
+                timezone="America/Los_Angeles",
+            )
+            self.logger.info(
+                "Connect to Tesla Powerwall: %s" % self.powerwall.is_connected()
+            )
 
     def login_emporia(self, username: str, password: str) -> None:
-        self.emporia = pyemvue.PyEmVue()
-        if os.path.exists(self.evse_token_file):
-            with open(self.evse_token_file) as f:
-                token = json.load(f)
-                self.emporia.login(
-                    id_token=token["id_token"],
-                    access_token=token["access_token"],
-                    refresh_token=token["refresh_token"],
-                    token_storage_file=self.evse_token_file,
-                )
-        else:
+        loggedin = False
+        if os.path.exists(self.emporia_token_file):
+            try:
+                with open(self.emporia_token_file) as f:
+                    token = json.load(f)
+                    self.emporia.login(
+                        id_token=token["id_token"],
+                        access_token=token["access_token"],
+                        refresh_token=token["refresh_token"],
+                        token_storage_file=self.emporia_token_file,
+                    )
+                loggedin = True
+            except Exception as e:
+                os.remove(self.emporia_token_file)
+                self.logger.exception(e)
+
+        if not loggedin:
             self.emporia.login(
                 username=username,
                 password=password,
-                token_storage_file=self.evse_token_file,
+                token_storage_file=self.emporia_token_file,
             )
         self.logger.info("Logged into Emporia EVSE")
-        self.evse = self.emporia.get_chargers()[0]
 
     def available_solar(self) -> int:
+        self.login_powerwall()
         solar = self.powerwall.solar()
         battery = self.powerwall.battery()
         home = self.powerwall.home()
@@ -53,18 +79,24 @@ class SolarHome:
         return int(available)
 
     def set_charger(self):
-        if self.evse.icon != "CarConnected":
-            self.logger.debug("EV charger is not plugged in.")
+        evse = self.emporia.get_chargers()[0]
+        if evse.icon != "CarConnected":
+            self.logger.debug("EV charger is not plugged in: %s" % evse.icon)
             return
 
-        excessive = self.available_solar()
+        excessive = self.available_solar() + evse.charger_on * evse.charging_rate * 240
         if excessive * 0.95 > 240 * 6:
             charge_rate = max(min(excessive * 0.95 / 240, 40), 6)
-            self.evse.charger_on = True
-            self.evse.charging_rate = charge_rate
-            self.evse.max_charging_rate = 40
-            self.evse = self.emporia.update_charger(self.evse)
-            self.logger.debug("Charging at %dA" % self.evse.charging_rate)
+            if not evse.charger_on or evse.charging_rate != charge_rate:
+                evse.charger_on = True
+                evse.charging_rate = charge_rate
+                evse.max_charging_rate = 40
+                self.emporia.update_charger(evse)
+                self.logger.info(
+                    "Charging at {0}A with exccessive solar {1:,}w".format(
+                        evse.charging_rate, excessive
+                    )
+                )
         else:
             self.logger.debug(
                 "Excessive solar is not enough: {0:,d}w".format(excessive)
@@ -72,27 +104,36 @@ class SolarHome:
             self.stop_charger()
 
     def stop_charger(self):
-        self.evse.charger_on = False
-        self.evse = self.emporia.update_charger(self.evse)
-        self.logger.debug("Charging stopped!")
+        if self.emporia:
+            evse = self.emporia.get_chargers()[0]
+            if evse.charger_on:
+                evse.charger_on = False
+                evse = self.emporia.update_charger(evse)
+                self.logger.debug("Charging stopped!")
 
     def run(self):
         while True:
-            self.set_charger()
-            sleep(60)
-
-    def __del__(self):
-        if self.evse:
-            self.stop_charger()
+            try:
+                self.set_charger()
+                sleep(60)
+            except Exception as e:
+                self.logger.exception(e)
+            finally:
+                self.stop_charger()
 
 
 if __name__ == "__main__":
     with open("logging_config.json", "r") as f:
         logging.config.dictConfig(json.load(f))
 
-    home = SolarHome()
-    home.login_powerwall(
-        host="", email="", password=""
+    with open("program.json", "r") as f:
+        params = json.load(f)
+
+    home = SolarHome(
+        powerwall_host=params["powerwall"]["host"],
+        powerwall_user=params["powerwall"]["user"],
+        powerwall_password=params["powerwall"]["password"],
+        emporia_user=params["emporia"]["user"],
+        emporia_password=params["emporia"]["password"],
     )
-    home.login_emporia(username="", password="")
     home.run()

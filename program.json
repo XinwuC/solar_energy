@@ -1,0 +1,11 @@
+{
+    "powerwall": {
+        "host": "",
+        "user": "",
+        "password": ""
+    },
+    "emporia": {
+        "user": "",
+        "password": ""
+    }
+}
