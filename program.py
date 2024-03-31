@@ -118,10 +118,10 @@ class SolarHome:
                     )
                 )
             else:
-                self.logger.debug("No change for charging.")
+                self.logger.debug("No change for charging rate @ %sA" % evse.charging_rate)
         else:
             self.logger.debug(
-                "Excessive solar is not enough: {0:,d}w, min: {1:,dw}".format(
+                "Excessive solar is not enough: {0:,d}w, min: {1:,d}w".format(
                     excessive, self.min_excessive_solar
                 )
             )
