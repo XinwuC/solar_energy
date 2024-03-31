@@ -1,8 +1,13 @@
+import datetime
 import json
 import logging
 import logging.config
 import os
+
+from dateutil import tz
+from suntime import Sun
 from time import sleep
+
 import pypowerwall
 import pyemvue
 
@@ -112,7 +117,11 @@ class SolarHome:
                 self.logger.debug("Charging stopped!")
 
     def run(self):
-        while True:
+        # run till sunset
+        sun = Sun(37.32, -122.03)
+        sunset = sun.get_sunset_time(time_zone=tz.gettz("America/Los_Angeles")).time()
+        self.logger.info("Today sunset at %s" % sunset.strftime("%H:%M:%S"))
+        while datetime.datetime.now().time() < sunset:
             try:
                 self.set_charger()
                 sleep(60)
