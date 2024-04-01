@@ -144,8 +144,8 @@ class SolarHome:
             self.logger.debug(
                 "Wait %s seconds before stop and lower to min charging rate." % wait
             )
-            evse.charging_rate = 6
-            self.emporia.update_charger(evse)
+            if evse.charging_rate > 6:
+               self.emporia.update_charger(evse, charge_rate=6)
         else:
             evse.charger_on = False
             evse = self.emporia.update_charger(evse)
