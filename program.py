@@ -97,7 +97,7 @@ class SolarHome:
 
         excessive = self.available_solar() + evse.charger_on * evse.charging_rate * 240
         if excessive > self.min_excessive_solar:
-            charge_rate = max(min(excessive * 0.95 / 240, 40), 6)
+            charge_rate = int(max(min(excessive * 0.95 / 240, 40), 6))
             wait = self.charger_protection_wait()
             if not evse.charger_on and wait > 0:
                 self.logger.debug(
@@ -111,14 +111,16 @@ class SolarHome:
                 evse.charger_on = True
                 evse.charging_rate = charge_rate
                 evse.max_charging_rate = 40
-                self.emporia.update_charger(evse)
                 self.logger.info(
                     "Charging at {0}A with exccessive solar {1:,}w".format(
                         evse.charging_rate, excessive
                     )
                 )
+                self.emporia.update_charger(evse)
             else:
-                self.logger.debug("No change for charging rate @ %sA" % evse.charging_rate)
+                self.logger.debug(
+                    "No change for charging rate @ %sA" % evse.charging_rate
+                )
         else:
             self.logger.debug(
                 "Excessive solar is not enough: {0:,d}w, min: {1:,d}w".format(
