@@ -150,7 +150,8 @@ class SolarHome:
             evse.charger_on = False
             evse = self.emporia.update_charger(evse)
             self.last_charging_state_change = datetime.now()
-            self.logger.debug("Charging stopped!")
+            self.logger.debug("Charging stopped and sleep for %d seconds!" % self.min_charging_state_change_interval.seconds)
+            sleep(self.min_charging_state_change_interval.seconds)
 
     def run(self):
         # run till sunset
