@@ -100,7 +100,7 @@ class SolarHome:
             charge_rate = int(max(min(excessive * 0.95 / 240, 40), 6))
             wait = self.charger_protection_wait()
             if not evse.charger_on and wait > 0:
-                self.logger.debug(
+                self.logger.info(
                     "Charger protection: wait %d seconds to charge." % wait
                 )
                 sleep(wait)
@@ -122,7 +122,7 @@ class SolarHome:
                     "No change for charging rate @ %sA" % evse.charging_rate
                 )
         else:
-            self.logger.debug(
+            self.logger.info(
                 "Excessive solar is not enough: {0:,d}w, min: {1:,d}w".format(
                     excessive, self.min_excessive_solar
                 )
@@ -141,7 +141,7 @@ class SolarHome:
             return
         wait = self.charger_protection_wait()
         if wait > 0:
-            self.logger.debug(
+            self.logger.info(
                 "Wait %s seconds before stop and lower to min charging rate." % wait
             )
             if evse.charging_rate > 6:
@@ -150,7 +150,7 @@ class SolarHome:
             evse.charger_on = False
             evse = self.emporia.update_charger(evse)
             self.last_charging_state_change = datetime.now()
-            self.logger.debug("Charging stopped and sleep for %d seconds!" % self.min_charging_state_change_interval.seconds)
+            self.logger.info("Charging stopped and sleep for %d seconds!" % self.min_charging_state_change_interval.seconds)
             sleep(self.min_charging_state_change_interval.seconds)
 
     def run(self):
@@ -165,6 +165,8 @@ class SolarHome:
                 self.logger.exception(e)
             finally:
                 sleep(15)
+        self.logger.info("Sunset, stop running.")
+        self.stop_charger()
 
 
 if __name__ == "__main__":
@@ -182,4 +184,3 @@ if __name__ == "__main__":
         emporia_password=params["emporia"]["password"],
     )
     home.run()
-    home.stop_charger()
