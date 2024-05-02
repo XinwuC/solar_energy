@@ -4,7 +4,7 @@ import logging.config
 import os
 
 from datetime import datetime, timedelta
-from dateutil import tz
+from dateutil import parser, tz
 from suntime import Sun
 from time import sleep
 
@@ -20,11 +20,10 @@ class SolarHome:
         powerwall_password: str,
         emporia_user: str,
         emporia_password,
+        stop_time: str = "sunset",
     ) -> None:
         self.logger = logging.getLogger(__name__)
         self.emporia_token_file = "keys.json"
-        # self.emporia_user = emporia_user
-        # self.emporia_password = emporia_pw
         self.emporia = pyemvue.PyEmVue()
         self.login_emporia(username=emporia_user, password=emporia_password)
 
@@ -38,6 +37,16 @@ class SolarHome:
         self.last_charging_state_change = (
             datetime.now() - self.min_charging_state_change_interval
         )
+
+        if stop_time == "sunset":
+            sun = Sun(37.32, -122.03)
+            sunset = sun.get_sunset_time(
+                time_zone=tz.gettz("America/Los_Angeles")
+            ).time()
+            self.logger.info("Today sunset at %s" % sunset.strftime("%H:%M:%S"))
+            self.stop_time = sunset
+        else:
+            self.stop_time = parser.parse(stop_time).time()
 
     def login_powerwall(self) -> None:
         if not self.powerwall or not self.powerwall.is_connected():
@@ -145,20 +154,20 @@ class SolarHome:
                 "Wait %s seconds before stop and lower to min charging rate." % wait
             )
             if evse.charging_rate > 6:
-               self.emporia.update_charger(evse, charge_rate=6)
+                self.emporia.update_charger(evse, charge_rate=6)
         else:
             evse.charger_on = False
             evse = self.emporia.update_charger(evse)
             self.last_charging_state_change = datetime.now()
-            self.logger.info("Charging stopped and sleep for %d seconds!" % self.min_charging_state_change_interval.seconds)
+            self.logger.info(
+                "Charging stopped and sleep for %d seconds!"
+                % self.min_charging_state_change_interval.seconds
+            )
             sleep(self.min_charging_state_change_interval.seconds)
 
     def run(self):
         # run till sunset
-        sun = Sun(37.32, -122.03)
-        sunset = sun.get_sunset_time(time_zone=tz.gettz("America/Los_Angeles")).time()
-        self.logger.info("Today sunset at %s" % sunset.strftime("%H:%M:%S"))
-        while datetime.now().time() < sunset:
+        while datetime.now().time() < self.stop_time:
             try:
                 self.set_charger()
             except Exception as e:
@@ -182,5 +191,6 @@ if __name__ == "__main__":
         powerwall_password=params["powerwall"]["password"],
         emporia_user=params["emporia"]["user"],
         emporia_password=params["emporia"]["password"],
+        stop_time=params["stop_time"] if "stop_time" in params else "sunset",
     )
     home.run()
