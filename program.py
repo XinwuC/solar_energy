@@ -24,17 +24,16 @@ class SolarHome:
             self.stop_time = parser.parse("15:00").astimezone(self.time_zone)
 
         # powerwall
-        self.powerwall_host = params["powerwall"]["host"],
-        self.powerwall_user = params["powerwall"]["user"],
-        self.powerwall_password = params["powerwall"]["password"],
+        self.powerwall_host = params["powerwall"]["host"]
+        self.powerwall_user = params["powerwall"]["user"]
+        self.powerwall_password = params["powerwall"]["password"]
         self.powerwall = None
 
         # emporia
-        self.emporia_user = params["emporia"]["user"],
-        self.emporia_password = params["emporia"]["password"],
+        self.emporia_user = str(params["emporia"]["user"])
+        self.emporia_password = str(params["emporia"]["password"])
         self.emporia_token_file = "keys.json"
         self.emporia = pyemvue.PyEmVue()
-        self.login_emporia(username=str(self.emporia_user), password=str(self.emporia_password))
 
         self.min_excessive_solar = int(6 * 240 * 1.05)
         self.min_charging_state_change_interval = timedelta(minutes=5)
@@ -50,7 +49,7 @@ class SolarHome:
         sunset = datetime.combine(sunrise, sunset.time(), tzinfo=self.time_zone)
         return sunrise, sunset
 
-    def login_powerwall(self) -> None:
+    def login_powerwall(self) -> bool:
         if not self.powerwall or not self.powerwall.is_connected():
             self.powerwall = pypowerwall.Powerwall(
                 host=self.powerwall_host,
@@ -60,43 +59,45 @@ class SolarHome:
             self.logger.info(
                 "Connect to Tesla Powerwall: %s" % self.powerwall.is_connected()
             )
+        return self.powerwall.is_connected()
 
-    def login_emporia(self, username: str, password: str) -> None:
+    def login_emporia(self) -> bool:
         loggedin = False
         if os.path.exists(self.emporia_token_file):
             try:
                 with open(self.emporia_token_file) as f:
                     token = json.load(f)
-                    self.emporia.login(
+                    loggedin = self.emporia.login(
                         id_token=token["id_token"],
                         access_token=token["access_token"],
                         refresh_token=token["refresh_token"],
                         token_storage_file=self.emporia_token_file,
                     )
-                loggedin = True
             except Exception as e:
                 os.remove(self.emporia_token_file)
                 self.logger.exception(e)
 
         if not loggedin:
-            self.emporia.login(
-                username=username,
-                password=password,
+            loggedin = self.emporia.login(
+                username=self.emporia_user,
+                password=self.emporia_password,
                 token_storage_file=self.emporia_token_file,
             )
-        self.logger.info("Logged into Emporia EVSE")
+        self.logger.info("Logged into Emporia EVSE: %s" % loggedin)
+        return loggedin
 
     def available_solar(self) -> int:
-        self.login_powerwall()
-        solar = self.powerwall.solar()
-        battery = self.powerwall.battery()
-        home = self.powerwall.home()
-        available = solar - home - abs(battery)
-        self.logger.debug(
-            "Available solar: {0:,.0f}w [Solar: {1:,.0f}w; Home: {2:,.0f}w; Battery: {3:,.0f}w]".format(
-                available, solar, home, battery
+        available = 0
+        if self.login_powerwall():
+            solar = self.powerwall.solar()
+            battery = self.powerwall.battery()
+            home = self.powerwall.home()
+            available = solar - home - abs(battery)
+            self.logger.debug(
+                "Available solar: {0:,.0f}w [Solar: {1:,.0f}w; Home: {2:,.0f}w; Battery: {3:,.0f}w]".format(
+                    available, solar, home, battery
+                )
             )
-        )
         return int(available)
 
     def set_charger(self):
@@ -172,11 +173,13 @@ class SolarHome:
         while now < self.start_time:
             sleep((self.start_time - now).total_seconds())
         # run
+        self.login_emporia()
         while self.start_time < now < self.stop_time:
             try:
                 self.set_charger()
             except Exception as e:
                 self.logger.exception(e)
+                self.login_emporia()
             finally:
                 sleep(15)
         self.logger.info("Stop running at configed time: %s." % self.stop_time)
