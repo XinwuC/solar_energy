@@ -13,48 +13,49 @@ import pyemvue
 
 
 class SolarHome:
-    def __init__(
-        self,
-        powerwall_host: str,
-        powerwall_user: str,
-        powerwall_password: str,
-        emporia_user: str,
-        emporia_password,
-        stop_time: str = "sunset",
-    ) -> None:
+    def __init__(self, params: dict) -> None:
         self.logger = logging.getLogger(__name__)
+
+        # set start and stop time
+        self.time_zone = tz.gettz("America/Los_Angeles")
+        self.start_time, self.stop_time = self.sunrise_sunset()
+        self.excessive_ratio = params.get("excessive_ratio") or 0.98
+        if params.get("nem_version") or 3 == 2:
+            self.stop_time = parser.parse("15:00").astimezone(self.time_zone)
+
+        # powerwall
+        self.powerwall_host = params["powerwall"]["host"],
+        self.powerwall_user = params["powerwall"]["user"],
+        self.powerwall_password = params["powerwall"]["password"],
+        self.powerwall = None
+
+        # emporia
+        self.emporia_user = params["emporia"]["user"],
+        self.emporia_password = params["emporia"]["password"],
         self.emporia_token_file = "keys.json"
         self.emporia = pyemvue.PyEmVue()
-        self.login_emporia(username=emporia_user, password=emporia_password)
-
-        self.powerwall_host = powerwall_host
-        self.powerwall_user = powerwall_user
-        self.powerwall_password = powerwall_password
-        self.powerwall = None
+        self.login_emporia(username=str(self.emporia_user), password=str(self.emporia_password))
 
         self.min_excessive_solar = int(6 * 240 * 1.05)
         self.min_charging_state_change_interval = timedelta(minutes=5)
         self.last_charging_state_change = (
-            datetime.now() - self.min_charging_state_change_interval
+                datetime.now().astimezone(self.time_zone) - self.min_charging_state_change_interval
         )
 
-        if stop_time == "sunset":
-            sun = Sun(37.32, -122.03)
-            sunset = sun.get_sunset_time(
-                time_zone=tz.gettz("America/Los_Angeles")
-            ).time()
-            self.logger.info("Today sunset at %s" % sunset.strftime("%H:%M:%S"))
-            self.stop_time = sunset
-        else:
-            self.stop_time = parser.parse(stop_time).time()
+    def sunrise_sunset(self):
+        sun = Sun(37.32, -122.03)
+        sunrise = sun.get_sunrise_time(time_zone=self.time_zone)
+        sunset = sun.get_sunset_time(time_zone=self.time_zone)
+        # temp fix for sunset is yesterday
+        sunset = datetime.combine(sunrise, sunset.time(), tzinfo=self.time_zone)
+        return sunrise, sunset
 
     def login_powerwall(self) -> None:
         if not self.powerwall or not self.powerwall.is_connected():
             self.powerwall = pypowerwall.Powerwall(
                 host=self.powerwall_host,
                 email=self.powerwall_user,
-                password=self.powerwall_password,
-                timezone="America/Los_Angeles",
+                password=self.powerwall_password
             )
             self.logger.info(
                 "Connect to Tesla Powerwall: %s" % self.powerwall.is_connected()
@@ -106,7 +107,7 @@ class SolarHome:
 
         excessive = self.available_solar() + evse.charger_on * evse.charging_rate * 240
         if excessive > self.min_excessive_solar:
-            charge_rate = int(max(min(excessive * 0.95 / 240, 40), 6))
+            charge_rate = int(max(min(excessive * self.excessive_ratio / 240, 40), 6))
             wait = self.charger_protection_wait()
             if not evse.charger_on and wait > 0:
                 self.logger.info(
@@ -166,15 +167,19 @@ class SolarHome:
             sleep(self.min_charging_state_change_interval.seconds)
 
     def run(self):
-        # run till sunset
-        while datetime.now().time() < self.stop_time:
+        now = datetime.now().astimezone(self.time_zone)
+        # wait till start time
+        while now < self.start_time:
+            sleep((self.start_time - now).total_seconds())
+        # run
+        while self.start_time < now < self.stop_time:
             try:
                 self.set_charger()
             except Exception as e:
                 self.logger.exception(e)
             finally:
                 sleep(15)
-        self.logger.info("Sunset, stop running.")
+        self.logger.info("Stop running at configed time: %s." % self.stop_time)
         self.stop_charger()
 
 
@@ -185,12 +190,5 @@ if __name__ == "__main__":
     with open("program.json", "r") as f:
         params = json.load(f)
 
-    home = SolarHome(
-        powerwall_host=params["powerwall"]["host"],
-        powerwall_user=params["powerwall"]["user"],
-        powerwall_password=params["powerwall"]["password"],
-        emporia_user=params["emporia"]["user"],
-        emporia_password=params["emporia"]["password"],
-        stop_time=params["stop_time"] if "stop_time" in params else "sunset",
-    )
+    home = SolarHome(params=params)
     home.run()
