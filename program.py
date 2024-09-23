@@ -125,6 +125,11 @@ class SolarHome:
             self.stop_charger()
 
     def grid_charge(self):
+        evse = self.emporia.get_chargers()[0]
+        if evse.icon != "CarConnected":
+            self.logger.debug("EV charger is not plugged in: %s" % evse.icon)
+            return
+
         if self.refresh_ev_soc() > self.max_soc_on_grid:
             self.logger.info("EV SOC is %d%%, larger than target %d%%, stop charging on grid")
             self.stop_charger()
