@@ -2,14 +2,15 @@ import json
 import logging
 import logging.config
 import os
-
 from datetime import datetime, timedelta
-from dateutil import parser, tz
-from suntime import Sun
 from time import sleep
 
-import pypowerwall
 import pyemvue
+import pypowerwall
+from dateutil import parser, tz
+from suntime import Sun
+
+from fordconnect import FordConnect
 
 
 class SolarHome:
@@ -20,8 +21,15 @@ class SolarHome:
         self.time_zone = tz.gettz("America/Los_Angeles")
         self.start_time, self.stop_time = self.sunrise_sunset()
         self.excessive_ratio = params.get("excessive_ratio") or 0.98
+        self.max_soc_on_grid = params.get("max_soc_on_grid") or 60
         if params.get("nem_version") or 3 == 2:
             self.stop_time = parser.parse("15:00").astimezone(self.time_zone)
+
+        # ford ev
+        self.ford = FordConnect(params["ford"])
+        self.vehicle_id = None
+        self.vehicle_soc = 0
+        self.vehicle_soc_update_time = datetime.today().astimezone(self.time_zone) - timedelta(days=1)
 
         # powerwall
         self.powerwall_host = params["powerwall"]["host"]
@@ -100,7 +108,7 @@ class SolarHome:
             )
         return int(available)
 
-    def set_charger(self):
+    def solar_charge(self):
         evse = self.emporia.get_chargers()[0]
         if evse.icon != "CarConnected":
             self.logger.debug("EV charger is not plugged in: %s" % evse.icon)
@@ -109,36 +117,40 @@ class SolarHome:
         excessive = self.available_solar() + evse.charger_on * evse.charging_rate * 240
         if excessive > self.min_excessive_solar:
             charge_rate = int(max(min(excessive * self.excessive_ratio / 240, 40), 6))
-            wait = self.charger_protection_wait()
-            if not evse.charger_on and wait > 0:
-                self.logger.info(
-                    "Charger protection: wait %d seconds to charge." % wait
-                )
-                sleep(wait)
-                return
-            if not evse.charger_on or evse.charging_rate != charge_rate:
-                if not evse.charger_on:
-                    self.last_charging_state_change = datetime.now()
-                evse.charger_on = True
-                evse.charging_rate = charge_rate
-                evse.max_charging_rate = 40
-                self.logger.info(
-                    "Charging at {0}A with exccessive solar {1:,}w".format(
-                        evse.charging_rate, excessive
-                    )
-                )
-                self.emporia.update_charger(evse)
-            else:
-                self.logger.debug(
-                    "No change for charging rate @ %sA" % evse.charging_rate
-                )
+            if self.set_charger(charge_rate):
+                self.logger.info("Charging at {0}A with exccessive solar {1:,}w".format(evse.charging_rate, excessive))
         else:
             self.logger.info(
-                "Excessive solar is not enough: {0:,d}w, min: {1:,d}w".format(
-                    excessive, self.min_excessive_solar
-                )
-            )
+                "Excessive solar is not enough: {0:,d}w, min: {1:,d}w".format(excessive, self.min_excessive_solar))
             self.stop_charger()
+
+    def grid_charge(self):
+        if self.refresh_ev_soc() > self.max_soc_on_grid:
+            self.logger.info("EV SOC is %d%%, larger than target %d%%, stop charging on grid")
+            self.stop_charger()
+        else:
+            if self.set_charger(40):
+                self.logger.info("Charge at max rate 40A on grid.")
+
+    def set_charger(self, charge_rate: int) -> bool:
+        charge_rate = max(min(charge_rate, 6), 40)
+        evse = self.emporia.get_chargers()[0]
+        wait = self.charger_protection_wait()
+        if not evse.charger_on and wait > 0:
+            self.logger.info("Charger protection: wait %d seconds to charge." % wait)
+            sleep(wait)
+            return False
+        if not evse.charger_on or evse.charging_rate != charge_rate:
+            if not evse.charger_on:
+                self.last_charging_state_change = datetime.now()
+            evse.charger_on = True
+            evse.charging_rate = charge_rate
+            evse.max_charging_rate = 40
+            self.emporia.update_charger(evse)
+            return True
+        else:
+            self.logger.debug("No change for charging rate @ %sA" % evse.charging_rate)
+            return False
 
     def charger_protection_wait(self) -> int:
         interval = datetime.now() - self.last_charging_state_change
@@ -167,16 +179,35 @@ class SolarHome:
             )
             sleep(self.min_charging_state_change_interval.seconds)
 
-    def run(self):
-        now = datetime.now().astimezone(self.time_zone)
-        # wait till start time
-        while now < self.start_time:
-            sleep((self.start_time - now).total_seconds())
-        # run
-        self.login_emporia()
-        while self.start_time < now < self.stop_time:
+    def refresh_ev_soc(self) -> float:
+        if datetime.now(tz=self.time_zone) - self.vehicle_soc_update_time > self.ford.refresh_interval:
             try:
-                self.set_charger()
+                if self.vehicle_id == None:
+                    self.vehicle_id = self.ford.vehicle_ids()[0]["vehicleId"]
+                    self.logger.info("Get vehicle id: %s" % self.vehicle_id)
+                info = self.ford.vehicle_info(self.vehicle_id)
+                self.vehicle_soc = info["vehicleDetails"]["batteryChargeLevel"]["value"]
+                self.vehicle_soc_update_time = datetime.now(tz=self.time_zone)
+                self.logger.info("EV SOC @ %d%%" % self.vehicle_soc)
+            except Exception as e:
+                self.logger.exception(e)
+        return self.vehicle_soc
+
+    def run(self):
+        self.login_emporia()
+        # charge when solar is unavailable
+        while datetime.now().astimezone(self.time_zone) < self.start_time:
+            try:
+                self.grid_charge()
+            except Exception as e:
+                self.logger.exception(e)
+                self.login_emporia()
+            finally:
+                sleep(self.ford.refresh_interval.total_seconds())
+        # charge when solar is available (sunrise to sunset)
+        while self.start_time < datetime.now().astimezone(self.time_zone) < self.stop_time:
+            try:
+                self.solar_charge()
             except Exception as e:
                 self.logger.exception(e)
                 self.login_emporia()

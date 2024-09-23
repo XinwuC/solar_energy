@@ -1,12 +1,21 @@
 {
-    "nem_version": 2,
-    "powerwall": {
-        "host": "",
-        "user": "",
-        "password": ""
-    },
-    "emporia": {
-        "user": "",
-        "password": ""
-    }
+  "nem_version": 2,
+  "max_soc_on_grid": 60,
+  "powerwall": {
+    "host": "",
+    "user": "",
+    "password": ""
+  },
+  "emporia": {
+    "user": "",
+    "password": ""
+  },
+  "ford": {
+    "client_id": "",
+    "client_secret": "",
+    "username": "",
+    "password": "",
+    "refresh_interval_mins": 15,
+    "refresh_token": ""
+  }
 }
