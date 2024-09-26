@@ -1,6 +1,6 @@
 """Fordpass API Library"""
 import logging
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -43,8 +43,11 @@ class FordConnect:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
 
+    def is_token_valid(self) -> bool:
+        return self.tokens is not None and datetime.fromtimestamp(self.tokens['expires_on']) > datetime.now()
+
     def refresh_tokens(self):
-        if self.tokens == None:
+        if not self.is_token_valid():
             # refresh token
             data = {
                 "grant_type": "refresh_token",
