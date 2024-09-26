@@ -131,7 +131,8 @@ class SolarHome:
             return
 
         if self.refresh_ev_soc() > self.max_soc_on_grid:
-            self.logger.info("EV SOC is %d%%, larger than target %d%%, stop charging on grid")
+            self.logger.info(
+                f"EV SOC is {self.vehicle_soc}%, larger than target {self.max_soc_on_grid}%, stop charging on grid")
             self.stop_charger()
         else:
             if self.set_charger(40):
@@ -158,7 +159,7 @@ class SolarHome:
             return False
 
     def charger_protection_wait(self) -> int:
-        interval = datetime.now() - self.last_charging_state_change
+        interval = datetime.now(tz=self.time_zone) - self.last_charging_state_change
         return max(
             0, self.min_charging_state_change_interval.seconds - interval.seconds
         )
@@ -169,25 +170,21 @@ class SolarHome:
             return
         wait = self.charger_protection_wait()
         if wait > 0:
-            self.logger.info(
-                "Wait %s seconds before stop and lower to min charging rate." % wait
-            )
+            self.logger.info(f"Wait {wait} seconds before stop and lower to min charging rate.")
             if evse.charging_rate > 6:
                 self.emporia.update_charger(evse, charge_rate=6)
         else:
             evse.charger_on = False
-            evse = self.emporia.update_charger(evse)
+            self.emporia.update_charger(evse)
             self.last_charging_state_change = datetime.now()
             self.logger.info(
-                "Charging stopped and sleep for %d seconds!"
-                % self.min_charging_state_change_interval.seconds
-            )
+                f"Charging stopped and sleep for {self.min_charging_state_change_interval.seconds} seconds!")
             sleep(self.min_charging_state_change_interval.seconds)
 
     def refresh_ev_soc(self) -> float:
         if datetime.now(tz=self.time_zone) - self.vehicle_soc_update_time > self.ford.refresh_interval:
             try:
-                if self.vehicle_id == None:
+                if self.vehicle_id is None:
                     self.vehicle_id = self.ford.vehicle_ids()[0]["vehicleId"]
                     self.logger.info("Get vehicle id: %s" % self.vehicle_id)
                 info = self.ford.vehicle_info(self.vehicle_id)
@@ -201,7 +198,7 @@ class SolarHome:
     def run(self):
         self.login_emporia()
         # charge when solar is unavailable
-        while datetime.now().astimezone(self.time_zone) < self.start_time:
+        while datetime.now(tz=self.time_zone) < self.start_time:
             try:
                 self.grid_charge()
             except Exception as e:
@@ -210,7 +207,7 @@ class SolarHome:
             finally:
                 sleep(self.ford.refresh_interval.total_seconds())
         # charge when solar is available (sunrise to sunset)
-        while self.start_time < datetime.now().astimezone(self.time_zone) < self.stop_time:
+        while self.start_time < datetime.now(tz=self.time_zone) < self.stop_time:
             try:
                 self.solar_charge()
             except Exception as e:
