@@ -101,34 +101,44 @@ class SolarHome:
                 f"Available solar: {available:,.0f}w [Solar: {solar:,.0f}w; Home: {home:,.0f}w; Battery: {battery:,.0f}w]")
         return int(available)
 
-    def solar_charge(self):
+    def solar_charge(self) -> bool:
+        """
+        return True if charging on excessive solar, else False
+        """
+        charging = False
         evse = self.emporia.get_chargers()[0]
         if evse.icon != "CarConnected":
             self.logger.debug("EV charger is not plugged in: %s" % evse.icon)
-            return
+            return charging
 
         excessive = self.available_solar() + evse.charger_on * evse.charging_rate * 240
         if excessive > self.min_excessive_solar:
             charge_rate = int(max(min(excessive * self.excessive_ratio / 240, 40), 6))
             if self.set_charger(charge_rate):
                 self.logger.info(f"Charging at {evse.charging_rate}A with excessive solar {excessive:,}w")
+                charging = True
         else:
             self.logger.info(f"Excessive solar is not enough: {excessive:,d}w, min: {self.min_excessive_solar:,d}w")
             self.stop_charger()
+        return charging
 
-    def grid_charge(self):
+    def grid_charge(self) -> bool:
+        """
+        return True if charging on grid, else False
+        """
+        charging = False
         evse = self.emporia.get_chargers()[0]
         if evse.icon != "CarConnected":
             self.logger.debug("EV charger is not plugged in: %s" % evse.icon)
-            return
-
-        if self.refresh_ev_soc() > self.max_soc_on_grid:
+        elif self.refresh_ev_soc() > self.max_soc_on_grid:
             self.logger.info(
                 f"EV SOC is {self.vehicle_soc}%, larger than target {self.max_soc_on_grid}%, stop charging on grid")
             self.stop_charger()
         else:
             if self.set_charger(40):
                 self.logger.info("Charge at max rate 40A on grid.")
+                charging = True
+        return charging
 
     def set_charger(self, charge_rate: int) -> bool:
         charge_rate = max(min(charge_rate, 6), 40)
@@ -190,7 +200,8 @@ class SolarHome:
         # charge when solar is unavailable
         while datetime.now(tz=self.time_zone) < self.start_time:
             try:
-                self.grid_charge()
+                # charge on grid regardless until reach max_soc_on_grid then switch to solar
+                self.grid_charge() or self.solar_charge()
             except Exception as e:
                 self.logger.exception(e)
                 self.login_emporia()
