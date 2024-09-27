@@ -45,9 +45,7 @@ class SolarHome:
 
         self.min_excessive_solar = int(6 * 240 * 1.05)
         self.min_charging_state_change_interval = timedelta(minutes=5)
-        self.last_charging_state_change = (
-                datetime.now().astimezone(self.time_zone) - self.min_charging_state_change_interval
-        )
+        self.last_charging_state_change = datetime.now(tz=self.time_zone) - self.min_charging_state_change_interval
 
     def sunrise_sunset(self):
         sun = Sun(37.32, -122.03)
@@ -64,9 +62,7 @@ class SolarHome:
                 email=self.powerwall_user,
                 password=self.powerwall_password
             )
-            self.logger.info(
-                "Connect to Tesla Powerwall: %s" % self.powerwall.is_connected()
-            )
+            self.logger.info(f"Connect to Tesla Powerwall: {self.powerwall.is_connected()}")
         return self.powerwall.is_connected()
 
     def login_emporia(self) -> bool:
@@ -102,10 +98,7 @@ class SolarHome:
             home = self.powerwall.home()
             available = solar - home - abs(battery)
             self.logger.debug(
-                "Available solar: {0:,.0f}w [Solar: {1:,.0f}w; Home: {2:,.0f}w; Battery: {3:,.0f}w]".format(
-                    available, solar, home, battery
-                )
-            )
+                f"Available solar: {available:,.0f}w [Solar: {solar:,.0f}w; Home: {home:,.0f}w; Battery: {battery:,.0f}w]")
         return int(available)
 
     def solar_charge(self):
@@ -118,10 +111,9 @@ class SolarHome:
         if excessive > self.min_excessive_solar:
             charge_rate = int(max(min(excessive * self.excessive_ratio / 240, 40), 6))
             if self.set_charger(charge_rate):
-                self.logger.info("Charging at {0}A with exccessive solar {1:,}w".format(evse.charging_rate, excessive))
+                self.logger.info(f"Charging at {evse.charging_rate}A with excessive solar {excessive:,}w")
         else:
-            self.logger.info(
-                "Excessive solar is not enough: {0:,d}w, min: {1:,d}w".format(excessive, self.min_excessive_solar))
+            self.logger.info(f"Excessive solar is not enough: {excessive:,d}w, min: {self.min_excessive_solar:,d}w")
             self.stop_charger()
 
     def grid_charge(self):
@@ -160,9 +152,7 @@ class SolarHome:
 
     def charger_protection_wait(self) -> int:
         interval = datetime.now(tz=self.time_zone) - self.last_charging_state_change
-        return max(
-            0, self.min_charging_state_change_interval.seconds - interval.seconds
-        )
+        return max(0, self.min_charging_state_change_interval.seconds - interval.seconds)
 
     def stop_charger(self):
         evse = self.emporia.get_chargers()[0]
@@ -215,7 +205,7 @@ class SolarHome:
                 self.login_emporia()
             finally:
                 sleep(15)
-        self.logger.info("Stop running at configed time: %s." % self.stop_time)
+        self.logger.info("Stop running at config time: %s." % self.stop_time)
         self.stop_charger()
 
 
