@@ -19,17 +19,16 @@ class SolarHome:
 
         # set start and stop time
         self.time_zone = tz.gettz("America/Los_Angeles")
-        self.start_time, self.stop_time = self.sunrise_sunset()
+        self.sunrise, self.sunset = self.sunrise_sunset()
+        self.nem_peak_hour = parser.parse("15:00").astimezone(self.time_zone)
         self.excessive_ratio = params.get("excessive_ratio") or 0.98
         self.max_soc_on_grid = params.get("max_soc_on_grid") or 60
-        if params.get("nem_version") or 3 == 2:
-            self.stop_time = parser.parse("15:00").astimezone(self.time_zone)
 
         # ford ev
         self.ford = FordConnect(params["ford"])
-        self.vehicle_id = None
-        self.vehicle_soc = 0
+        self.vehicle_soc = self.max_soc_on_grid
         self.vehicle_soc_update_time = datetime.today().astimezone(self.time_zone) - timedelta(days=1)
+        self.vehicle_id = None
 
         # powerwall
         self.powerwall_host = params["powerwall"]["host"]
@@ -42,6 +41,7 @@ class SolarHome:
         self.emporia_password = str(params["emporia"]["password"])
         self.emporia_token_file = "keys.json"
         self.emporia = pyemvue.PyEmVue()
+        self.evse = None
 
         self.min_excessive_solar = int(6 * 240 * 1.05)
         self.min_charging_state_change_interval = timedelta(minutes=5)
@@ -101,85 +101,95 @@ class SolarHome:
                 f"Available solar: {available:,.0f}w [Solar: {solar:,.0f}w; Home: {home:,.0f}w; Battery: {battery:,.0f}w]")
         return int(available)
 
+    def refresh_charger_status(self):
+        self.evse = self.emporia.get_chargers()[0]
+        # fix emporia status when in standby mode
+        if self.evse.status == 'Standby':
+            self.evse.charging_rate = 0
+            self.evse.charger_on = False
+
     def solar_charge(self) -> bool:
         """
         return True if charging on excessive solar, else False
         """
-        charging = False
-        evse = self.emporia.get_chargers()[0]
-        if evse.icon != "CarConnected":
-            self.logger.debug("EV charger is not plugged in: %s" % evse.icon)
-            return charging
+        self.refresh_charger_status()
+        if self.evse.icon != "CarConnected":
+            self.logger.debug(f"EV charger is not plugged in: {self.evse.icon}.")
+            return self.evse.charger_on
 
-        excessive = self.available_solar() + evse.charger_on * evse.charging_rate * 240
-        if excessive > self.min_excessive_solar:
+        excessive = self.available_solar() + self.evse.charger_on * self.evse.charging_rate * 240
+        if self.powerwall.is_connected() and excessive > self.min_excessive_solar:
             charge_rate = int(max(min(excessive * self.excessive_ratio / 240, 40), 6))
             if self.set_charger(charge_rate):
-                self.logger.info(f"Charging at {evse.charging_rate}A with excessive solar {excessive:,}w")
-                charging = True
+                self.logger.info(f"Charging at {self.evse.charging_rate}A with excessive solar {excessive:,}w")
         else:
             self.logger.info(f"Excessive solar is not enough: {excessive:,d}w, min: {self.min_excessive_solar:,d}w")
             self.stop_charger()
-        return charging
+        return self.evse.charger_on
 
     def grid_charge(self) -> bool:
         """
         return True if charging on grid, else False
         """
-        charging = False
-        evse = self.emporia.get_chargers()[0]
-        if evse.icon != "CarConnected":
-            self.logger.debug("EV charger is not plugged in: %s" % evse.icon)
-        elif self.refresh_ev_soc() > self.max_soc_on_grid:
-            self.logger.info(
-                f"EV SOC is {self.vehicle_soc}%, larger than target {self.max_soc_on_grid}%, stop charging on grid")
-            self.stop_charger()
-        else:
+        self.refresh_charger_status()
+        if self.evse.icon != "CarConnected":
+            self.logger.debug(f"EV charger is not plugged in: {self.evse.icon}.")
+        elif self.refresh_ev_soc() < self.max_soc_on_grid:
             if self.set_charger(40):
                 self.logger.info("Charge at max rate 40A on grid.")
-                charging = True
-        return charging
+        else:
+            self.logger.info(
+                f"EV SOC is {self.vehicle_soc}%, larger than target {self.max_soc_on_grid}%.")
+            self.stop_charger()
+
+        return self.evse.charger_on
 
     def set_charger(self, charge_rate: int) -> bool:
-        charge_rate = max(min(charge_rate, 6), 40)
-        evse = self.emporia.get_chargers()[0]
+        """
+        return True if charging
+        """
+        charge_rate = max(min(charge_rate, 40), 6)
         wait = self.charger_protection_wait()
-        if not evse.charger_on and wait > 0:
+
+        self.refresh_charger_status()
+        if not self.evse.charger_on and wait > 0:
             self.logger.info("Charger protection: wait %d seconds to charge." % wait)
-            sleep(wait)
-            return False
-        if not evse.charger_on or evse.charging_rate != charge_rate:
-            if not evse.charger_on:
-                self.last_charging_state_change = datetime.now()
-            evse.charger_on = True
-            evse.charging_rate = charge_rate
-            evse.max_charging_rate = 40
-            self.emporia.update_charger(evse)
-            return True
-        else:
-            self.logger.debug("No change for charging rate @ %sA" % evse.charging_rate)
-            return False
+            return self.evse.charger_on
+
+        if self.evse.charger_on and self.evse.charging_rate == charge_rate:
+            self.logger.debug(f"No change for charging rate @ {charge_rate}A")
+            return self.evse.charger_on
+
+        if not self.evse.charger_on:
+            self.last_charging_state_change = datetime.now(tz=self.time_zone)
+        self.evse.charger_on = True
+        self.evse.charging_rate = charge_rate
+        self.evse.max_charging_rate = 40
+        self.evse = self.emporia.update_charger(self.evse)
+        return self.evse.charger_on
 
     def charger_protection_wait(self) -> int:
         interval = datetime.now(tz=self.time_zone) - self.last_charging_state_change
         return max(0, self.min_charging_state_change_interval.seconds - interval.seconds)
 
-    def stop_charger(self):
-        evse = self.emporia.get_chargers()[0]
-        if not evse.charger_on:
-            return
+    def stop_charger(self) -> bool:
+        """
+        return True if charger stopped
+        """
+        self.refresh_charger_status()
         wait = self.charger_protection_wait()
-        if wait > 0:
-            self.logger.info(f"Wait {wait} seconds before stop and lower to min charging rate.")
-            if evse.charging_rate > 6:
-                self.emporia.update_charger(evse, charge_rate=6)
-        else:
-            evse.charger_on = False
-            self.emporia.update_charger(evse)
-            self.last_charging_state_change = datetime.now()
-            self.logger.info(
-                f"Charging stopped and sleep for {self.min_charging_state_change_interval.seconds} seconds!")
-            sleep(self.min_charging_state_change_interval.seconds)
+        if self.evse.charger_on:
+            if wait > 0:
+                self.logger.info(f"Wait {wait} seconds before stop and lower to min charging rate.")
+                self.evse = self.emporia.update_charger(self.evse, charge_rate=6)
+            else:
+                self.evse.charger_on = False
+                self.evse = self.emporia.update_charger(self.evse)
+                self.last_charging_state_change = datetime.now(tz=self.time_zone)
+                self.logger.info(
+                    f"Charging stopped and sleep for {self.min_charging_state_change_interval.seconds} seconds!")
+                sleep(self.min_charging_state_change_interval.seconds)
+        return not self.evse.charger_on
 
     def refresh_ev_soc(self) -> float:
         if datetime.now(tz=self.time_zone) - self.vehicle_soc_update_time > self.ford.refresh_interval:
@@ -195,28 +205,30 @@ class SolarHome:
                 self.logger.exception(e)
         return self.vehicle_soc
 
+    def run_charger(self, charging: ()):
+        try:
+            charging()
+        except Exception as e:
+            self.logger.exception(e)
+            self.login_emporia()
+        finally:
+            sleep(15)
+
     def run(self):
         self.login_emporia()
-        # charge when solar is unavailable
-        while datetime.now(tz=self.time_zone) < self.start_time:
-            try:
-                # charge on grid regardless until reach max_soc_on_grid then switch to solar
-                self.grid_charge() or self.solar_charge()
-            except Exception as e:
-                self.logger.exception(e)
-                self.login_emporia()
-            finally:
-                sleep(self.ford.refresh_interval.total_seconds())
-        # charge when solar is available (sunrise to sunset)
-        while self.start_time < datetime.now(tz=self.time_zone) < self.stop_time:
-            try:
-                self.solar_charge()
-            except Exception as e:
-                self.logger.exception(e)
-                self.login_emporia()
-            finally:
-                sleep(15)
-        self.logger.info("Stop running at config time: %s." % self.stop_time)
+        # charge on grid when solar is unavailable
+        while datetime.now(tz=self.time_zone) < self.sunrise:
+            self.run_charger(self.grid_charge)
+        # smart charge on grid or solar during off-peak hours during solar
+        while datetime.now(tz=self.time_zone) < self.nem_peak_hour:
+            if self.refresh_ev_soc() < self.max_soc_on_grid:
+                self.run_charger(self.grid_charge)
+            else:
+                self.run_charger(self.solar_charge)
+        # charge on solar durin peak hours
+        while datetime.now(tz=self.time_zone) < self.sunset:
+            self.run_charger(self.solar_charge)
+        self.logger.info("Stop running at sunset time: %s." % self.sunset)
         self.stop_charger()
 
 
@@ -229,3 +241,4 @@ if __name__ == "__main__":
 
     home = SolarHome(params=params)
     home.run()
+    
