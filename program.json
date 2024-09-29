@@ -1,5 +1,4 @@
 {
-  "nem_version": 2,
   "max_soc_on_grid": 60,
   "powerwall": {
     "host": "",
