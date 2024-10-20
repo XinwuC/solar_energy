@@ -45,7 +45,7 @@ class SolarHome:
         self.evse_refresh_time = datetime.today().astimezone(self.time_zone) - timedelta(days=1)
         self.evse = None
 
-        self.min_excessive_solar = int(6 * 240 * 1.05)
+        self.min_excessive_solar = int(6 * 240)
         self.min_charging_state_change_interval = timedelta(minutes=5)
         self.last_charging_state_change = datetime.now(tz=self.time_zone) - self.min_charging_state_change_interval
 
