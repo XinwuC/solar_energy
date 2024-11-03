@@ -44,6 +44,7 @@ class SolarHome:
         self.emporia = pyemvue.PyEmVue()
         self.evse_refresh_time = datetime.today().astimezone(self.time_zone) - timedelta(days=1)
         self.evse = None
+        self.emporia_vehicle = None
 
         self.min_excessive_solar = int(6 * 240)
         self.min_charging_state_change_interval = timedelta(minutes=5)
@@ -215,14 +216,19 @@ class SolarHome:
                 self.evse.charging_rate = 0
                 self.evse.charger_on = False
 
-    def refresh_ev_soc(self) -> float:
+    def refresh_ev_soc(self, source="emporia") -> float:
         if datetime.now(tz=self.time_zone) - self.vehicle_soc_update_time > self.ford.refresh_interval:
             try:
-                if self.vehicle_id is None:
-                    self.vehicle_id = self.ford.vehicle_ids()[0]["vehicleId"]
-                    self.logger.info("Get vehicle id: %s" % self.vehicle_id)
-                info = self.ford.vehicle_info(self.vehicle_id)
-                self.vehicle_soc = info["vehicleDetails"]["batteryChargeLevel"]["value"]
+                if source == "emporia":
+                    if self.emporia_vehicle is None:
+                        self.emporia_vehicle = self.emporia.get_vehicles()[0]
+                    self.vehicle_soc = self.emporia.get_vehicle_status(self.emporia_vehicle.vehicle_gid).battery_level
+                elif source == "fordpass":
+                    if self.vehicle_id is None:
+                        self.vehicle_id = self.ford.vehicle_ids()[0]["vehicleId"]
+                        self.logger.info("Get vehicle id: %s" % self.vehicle_id)
+                    info = self.ford.vehicle_info(self.vehicle_id)
+                    self.vehicle_soc = info["vehicleDetails"]["batteryChargeLevel"]["value"]
                 self.vehicle_soc_update_time = datetime.now(tz=self.time_zone)
                 self.logger.info("EV SOC @ %d%%" % self.vehicle_soc)
             except Exception as e:
