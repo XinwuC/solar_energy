@@ -180,7 +180,7 @@ class SolarHome:
         interval = datetime.now(tz=self.time_zone) - self.last_charging_state_change
         return max(0, self.min_charging_state_change_interval.seconds - interval.seconds)
 
-    def stop_charger(self) -> bool:
+    def stop_charger(self, reset: bool = False) -> bool:
         """
         return True if charger stopped
         """
@@ -192,6 +192,8 @@ class SolarHome:
                 self.refresh_charger_status(self.emporia.update_charger(self.evse, charge_rate=6))
             else:
                 self.evse.charger_on = False
+                if reset:
+                    self.evse.charging_rate = 40
                 self.refresh_charger_status(self.emporia.update_charger(self.evse))
                 self.last_charging_state_change = datetime.now(tz=self.time_zone)
                 self.logger.info(
@@ -262,7 +264,7 @@ class SolarHome:
         except Exception as e:
             self.logger.exception(e)
         finally:
-            self.stop_charger()
+            self.stop_charger(True)
 
 
 if __name__ == "__main__":
