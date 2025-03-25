@@ -186,19 +186,18 @@ class SolarHome:
         """
         self.refresh_charger_status()
         wait = self.charger_protection_wait()
-        if self.evse.charger_on:
-            if wait > 0:
-                self.logger.info(f"Wait {wait} seconds before stop and lower to min charging rate.")
-                self.refresh_charger_status(self.emporia.update_charger(self.evse, charge_rate=6))
-            else:
-                self.evse.charger_on = False
-                if reset:
-                    self.evse.charging_rate = 40
-                self.refresh_charger_status(self.emporia.update_charger(self.evse))
-                self.last_charging_state_change = datetime.now(tz=self.time_zone)
-                self.logger.info(
-                    f"Charging stopped and sleep for {self.min_charging_state_change_interval.seconds} seconds!")
-                sleep(self.min_charging_state_change_interval.seconds)
+        if wait > 0:
+            self.logger.info(f"Wait {wait} seconds before stop and lower to min charging rate.")
+            self.refresh_charger_status(self.emporia.update_charger(self.evse, charge_rate=6))
+            sleep(wait)
+        if self.evse.charger_on or reset:
+            self.evse.charging_rate = 40
+            self.evse.charger_on = False
+            self.refresh_charger_status(self.emporia.update_charger(self.evse))
+            self.last_charging_state_change = datetime.now(tz=self.time_zone)
+            self.logger.info(
+                f"Charging stopped and reset to 40A, sleep for {self.min_charging_state_change_interval.seconds} seconds!")
+            sleep(self.min_charging_state_change_interval.seconds)
         return not self.evse.charger_on
 
     def is_car_connected(self) -> bool:
